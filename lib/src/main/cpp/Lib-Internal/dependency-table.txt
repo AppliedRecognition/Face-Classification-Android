@@ -1,0 +1,32 @@
+
+Module          Internal Deps             External Deps
+------          -------------             -------------
+tools           render rec_dlib det_dlib  boost_filesystem
+
+render          raw_image core            opencv_calib3d opencv_imgproc opencv_core
+
+rec_ncnn        rec raw_image [models]    ncnn gomp
+rec_dlib        rec dlibx [models]
+rec             core json
+
+det_ncnn        det                       ncnn gomp
+det_dlib        det dlibx
+det             raw_image core json [models]
+
+models          applog                    [stdc++fs] [boost_filesystem]
+
+dlibx           raw_image core json       dlib lapack openblas blas
+
+raw_image_3d    raw_image
+raw_image_io    raw_image                 jpeg [tiff] [png]
+raw_image       applog
+
+json            applog                    z
+
+core            applog
+
+applog_file     applog                    stdc++fs
+applog          (nothing)
+
+[optional] <- dependency may be removed with compile time option
+

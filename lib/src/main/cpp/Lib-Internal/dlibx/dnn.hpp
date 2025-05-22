@@ -1,0 +1,10 @@
+#include "dnn_fc_dynamic.hpp"
+#include "dnn_condw.hpp"
+#include "dnn_lmcon.hpp"
+#include "dnn_padding.hpp"
+#include "dnn_lambda.hpp"
+#include "dnn_sum_neighbours.hpp"
+#include "dnn_loss_softmax_log.hpp"
+#include "dnn_input_generic_image.hpp"
+#include "dnn_input_frames.hpp"
+#include <dlib/dnn.h>

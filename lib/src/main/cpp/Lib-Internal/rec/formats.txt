@@ -1,0 +1,63 @@
+
+Serialization formats:
+
+AMF3 objects start with either 0A 0B 01 or 0A 01.
+
+JSON objects start with '{' or possibly whitespace.
+
+CBOR objects start with 0xA0 <= byte < 0xC0
+CBOR arrays  start with 0x80 <= byte < 0xA0
+CBOR can also start with magic D9 D9 F7 followed by the value.
+* lib-internal/json ensures CBOR encodings don't look like ZLIB deflate
+  by prepending the magic if necessary
+
+ZLIB deflate starts with 2 bytes b0 b1 satisfying:
+   (b0 & 15) == 8 && (b0 * 256 + b1) % 31 == 0
+
+
+==
+General raw single prototype serialization:
+
+  byte 0: version number
+  byte 1: element count (or 0 if count is per-vector, below)
+  byte 2: element type (fpvc 0x10=8bit*, 0x11=12bit, 0x12=16bit)
+  byte 3: number of feature vectors (1 or 2)
+
+  for each feature vector (fpvc):
+    4 bytes: element count only if not in header (little endian)
+    4 bytes: (float) coefficient
+    elements: integer 8, 12 or 16 bits each
+    padding: if necessary to multiple of 4 bytes
+
+  * the 8-bit format 0x10 is the table based fpvc (not int8!)
+
+
+==
+Special raw single prototype:
+
+  byte 0: version number*
+  byte 1: 1
+  bytes 2 and 3: bfloat16 encoding of coefficient
+  followed by 128 int8 (not fpvc!) vector values
+  (total serialized size is exactly 132 bytes)
+  
+  * version number 120 must not be used because bytes 120 1 are a
+    valid zlib deflate header
+
+
+==
+Deprecated multiple prototype serialization:
+  This format has been replaced with a CBOR array of serialized
+  individual prototypes.  CBOR arrays start with 0x80 <= byte < 0xA0
+  or with magic D9 D9 F7.
+
+  byte 0: zero (to distinquish from single prototype)
+  byte 1: version
+  byte 2: reserved (zero)
+  byte 3: 1 = multi-prototype (note: 0 = pca)
+
+  for each prototype:
+    4-byte length
+    serialized prototype (padded to multiple of 4)
+
+  footer: 4-byte zero

@@ -1,0 +1,137 @@
+
+Concise yet precise neural net structure
+========================================
+
+There are 2 sub-formats: generic and detail.
+
+Example spoofed license model (generic):
+
+    sig|1<bias|fc|avg|
+    relu|128<bias|con1|96<cdw3|pad1|max2/2|
+    relu|96<bias|con1|64<cdw3|pad1|max2/2|
+    relu|64<bias|con1|32<cdw3|pad1|max2/2|
+    relu|32<bias|con1|16<cdw3|pad1|max2/2|
+    relu|16<bias|con3|pad1|3<u8
+
+Same model in detail:
+
+    sig|1<bias|fc|128<avg|
+    relu|128x10x9<bias|con1|cdw3|pad1|96x10x9<max2/2|
+    relu|96x21x18<bias|con1|cdw3|pad1|64x21x18<max2/2|
+    relu|64x42x36<bias|con1|cdw3|pad1|32x42x36<max2/2|
+    relu|32x84x72<bias|con1|cdw3|pad1|16x84x72<max2/2|
+    relu|16x168x144<bias|con3|pad1|3x168x144<u8
+
+The detail version includes additional image size information.  Most models
+support input images of varying width and height.  Only when a specific image
+has been run through the model can the image size at each layer be known.  
+
+The number of channels at each layer is generally known in advance though, and
+the required type of input image (rgb, grayscale, etc.) is also fixed.  Thus,
+this information appears in the generic version.
+
+Flow is from output on the left to input on the right.  Layers are separated
+by the pipe '|' character.  This works like the unix pipe character but in
+reverse (image flow is from right to left).
+
+In the above model the output is a single channel sigmoid "sig" layer while
+the input is "3<u8" which is 3 channels of unsigned 8-bit bytes (rgb or yuv).
+
+The '<' character denotes ouput dimensions.  In the single number case
+(e.g. "96<") the number is the number of channels.  In the full image
+dimensions case the format is "channels x rows x columns".  This output
+dimensions information is not shown for every layer since we want to keep
+this description concise.  Generally the dimensions are shown each time
+they change, but they are sometimes delayed by a layer or two.  For
+example, in "32x84x72<bias|con1|cdw3|pad1" the "pad1" layer changed the
+width and height, the "cdw3" layer changed them back, and the "con1" layer
+changed the number of channels (from 16 to 32).
+
+Numbers and punctuation following a layer name (e.g. "max2/2") are parameters
+of that specific layer.  More about that later.
+
+
+Another example, v16 (Davis King) recognition model (detail version):
+
+    128<bias|fc|avg|
+    relu|256x2x2<add(256x2x2<avg2/2,bias|con3|pad1|relu|256<bias|con3/2)|
+    relu|add(bias|con3|pad1|relu|bias|con3|pad1,@)|
+    relu|add(bias|con3|pad1|relu|bias|con3|pad1,@)|
+    relu|256x4x4<add(128x4x4<avg2/2,bias|con3|pad1|relu|256x3x3<bias|con3/2)|
+    relu|add(bias|con3|pad1|relu|bias|con3|pad1,@)|
+    relu|add(bias|con3|pad1|relu|bias|con3|pad1,@)|
+    relu|128x8x8<add(64x8x8<avg2/2,bias|con3|pad1|relu|128x8x8<bias|con3/2)|
+    relu|add(bias|con3|pad1|relu|bias|con3|pad1,@)|
+    relu|add(bias|con3|pad1|relu|bias|con3|pad1,@)|
+    relu|add(bias|con3|pad1|relu|bias|con3|pad1,@)|
+    relu|64x17x17<add(32x17x17<avg2/2,bias|con3|pad1|relu|64x17x17<bias|con3/2)|
+    relu|add(bias|con3|pad1|relu|bias|con3|pad1,@)|
+    relu|add(bias|con3|pad1|relu|bias|con3|pad1,@)|
+    relu|add(bias|con3|pad1|relu|bias|con3|pad1,@)|
+    32x35x35<max3/2|relu|32x72x72<bias|con7/2|3x150x150<u8
+
+Some additional punctuation appears here.  Make note of the "add(X,Y)" layers.
+The "add" layer sums two images with zero padding as needed to make them the
+same size.  Note that "add(X,Y)|Z" means Z is the input to both X and Y.
+Kind of like "add(X|Z,Y|Z)".  Additionally, note the use of the '@' character.
+This denotes an identity layer (ie. input is copied to output).  This means
+that "add(X,@)|Z" is effectively "add(X|Z,Z)".  
+
+Note that this model is a residual model and each of these "add(X,@)" layers
+is a residual layer.
+
+
+Final example, v20 (Facenet) recognition model (generic version):
+(A wider screen is required here.  Sorry about that.)
+
+    128<bias|fc|avg|
+         add(1792<bias|con1|concat(relu|192<bias|con1,relu|192<bias|con3x1|pad1x0|relu|192<bias|con1x3|pad0x1|relu|192<bias|con1),@)|
+    relu|add(1792<bias|con1|concat(relu|192<bias|con1,relu|192<bias|con3x1|pad1x0|relu|192<bias|con1x3|pad0x1|relu|192<bias|con1),@)|
+    relu|add(1792<bias|con1|concat(relu|192<bias|con1,relu|192<bias|con3x1|pad1x0|relu|192<bias|con1x3|pad0x1|relu|192<bias|con1),@)|
+    relu|add(1792<bias|con1|concat(relu|192<bias|con1,relu|192<bias|con3x1|pad1x0|relu|192<bias|con1x3|pad0x1|relu|192<bias|con1),@)|
+    relu|add(1792<bias|con1|concat(relu|192<bias|con1,relu|192<bias|con3x1|pad1x0|relu|192<bias|con1x3|pad0x1|relu|192<bias|con1),@)|
+    relu|add(1792<bias|con1|concat(relu|192<bias|con1,relu|192<bias|con3x1|pad1x0|relu|192<bias|con1x3|pad0x1|relu|192<bias|con1),@)|
+    concat(relu|384<bias|con3/2|relu|256<bias|con1,relu|256<bias|con3/2|relu|256<bias|con1,relu|256<bias|con3/2|relu|256<bias|con3|pad1|relu|256<bias|con1,max3/2)|
+    relu|add(896<bias|con1|concat(relu|128<bias|con1,relu|128<bias|con7x1|pad3x0|relu|128<bias|con1x7|pad0x3|relu|128<bias|con1),@)|
+    relu|add(896<bias|con1|concat(relu|128<bias|con1,relu|128<bias|con7x1|pad3x0|relu|128<bias|con1x7|pad0x3|relu|128<bias|con1),@)|
+    relu|add(896<bias|con1|concat(relu|128<bias|con1,relu|128<bias|con7x1|pad3x0|relu|128<bias|con1x7|pad0x3|relu|128<bias|con1),@)|
+    relu|add(896<bias|con1|concat(relu|128<bias|con1,relu|128<bias|con7x1|pad3x0|relu|128<bias|con1x7|pad0x3|relu|128<bias|con1),@)|
+    relu|add(896<bias|con1|concat(relu|128<bias|con1,relu|128<bias|con7x1|pad3x0|relu|128<bias|con1x7|pad0x3|relu|128<bias|con1),@)|
+    relu|add(896<bias|con1|concat(relu|128<bias|con1,relu|128<bias|con7x1|pad3x0|relu|128<bias|con1x7|pad0x3|relu|128<bias|con1),@)|
+    relu|add(896<bias|con1|concat(relu|128<bias|con1,relu|128<bias|con7x1|pad3x0|relu|128<bias|con1x7|pad0x3|relu|128<bias|con1),@)|
+    relu|add(896<bias|con1|concat(relu|128<bias|con1,relu|128<bias|con7x1|pad3x0|relu|128<bias|con1x7|pad0x3|relu|128<bias|con1),@)|
+    relu|add(896<bias|con1|concat(relu|128<bias|con1,relu|128<bias|con7x1|pad3x0|relu|128<bias|con1x7|pad0x3|relu|128<bias|con1),@)|
+    relu|add(896<bias|con1|concat(relu|128<bias|con1,relu|128<bias|con7x1|pad3x0|relu|128<bias|con1x7|pad0x3|relu|128<bias|con1),@)|
+    concat(relu|384<bias|con3/2,relu|256<bias|con3/2|relu|192<bias|con3|pad1|relu|192<bias|con1,max3/2)|
+    relu|add(256<bias|con1|concat(relu|32<bias|con1,relu|32<bias|con3|pad1|relu|32<bias|con1,relu|32<bias|con3|pad1|relu|32<bias|con3|pad1|relu|32<bias|con1),@)|
+    relu|add(256<bias|con1|concat(relu|32<bias|con1,relu|32<bias|con3|pad1|relu|32<bias|con1,relu|32<bias|con3|pad1|relu|32<bias|con3|pad1|relu|32<bias|con1),@)|
+    relu|add(256<bias|con1|concat(relu|32<bias|con1,relu|32<bias|con3|pad1|relu|32<bias|con1,relu|32<bias|con3|pad1|relu|32<bias|con3|pad1|relu|32<bias|con1),@)|
+    relu|add(256<bias|con1|concat(relu|32<bias|con1,relu|32<bias|con3|pad1|relu|32<bias|con1,relu|32<bias|con3|pad1|relu|32<bias|con3|pad1|relu|32<bias|con1),@)|
+    relu|add(256<bias|con1|concat(relu|32<bias|con1,relu|32<bias|con3|pad1|relu|32<bias|con1,relu|32<bias|con3|pad1|relu|32<bias|con3|pad1|relu|32<bias|con1),@)|
+    relu|256<bias|con3/2|relu|192<bias|con3|relu|80<bias|con1|max3/2|relu|64<bias|con3|pad1|relu|32<bias|con3|relu|32<bias|con3/2|lambda[gauss]|3<u8
+
+This is an inception model, and as such, contains "concat(a,b,...)" layers.
+Each "concat" layer requires all inputs to have the same width and height,
+but the number of channels may vary since this is the dimension along which
+the concatenation happens.  Beyond this, the syntax for concat layers is
+pretty much the same as for "add".
+
+
+Some specific layer parameters are:
+
+For "con", "cdw", "avg" and "max".  A single number indicates the filter or
+pooling size.  E.g. "con3" is 3x3 convolution.  The "/2" indicates a stride
+in both the horizontal and veritical directions.  So "max2/2" is 2x2 max
+pooling sliding 2 pixels at a time in each direction.  A non-square filter
+size is denoted by something like "con1x7".  Note that "cdw" is depth-wise
+convolution.  The "avg" layer with no parameters is average all pixels.
+
+The "pad1" is 1 extra pixel on all sides while "pad3x0" is 3 extra rows top
+and bottom (width unchanged).
+
+The "lambda[...]" layers may implement one or more per-pixel operations.
+Thus, one might see "lambda[A,B,C]" which is effectively the same as
+"lambda[A]|lambda[B]|lambda[C]".
+
+
+==

@@ -1,0 +1,415 @@
+
+#error THIS CODE IS BROKEN DO NOT USE
+
+#include "conv.hpp"
+#include "conv_blas.hpp"
+#include "aligned_matrix.hpp"
+
+// ncnn
+#include <layer.h>
+#include <layer_type.h>
+
+#include <core/context.hpp>
+#include <core/thread_data.hpp>
+#include <core/job_queue.hpp>
+
+#include <applog/core.hpp>
+
+using namespace dlibx;
+
+const dlib::resizable_tensor dlibx::empty_tensor; // from tensor.hpp
+
+static bool warn_context_not_found = false;
+
+
+/****************  class forward_convdw  ****************/
+
+struct forward_conv::internal {
+    int wy, wx, sy, sx;
+    int in_channels, out_channels;
+    std::vector<std::unique_ptr<ncnn::Layer> > filters; // per output channel
+    ncnn::Option opt;
+
+    internal(int nr, int nc, int dy, int dx, int sy, int sx,
+             const dlib::tensor& filters)
+        : wy(1 + (nr-1) * dy),
+          wx(1 + (nc-1) * dx),
+          sy(sy), sx(sx),
+          in_channels(int(filters.k()*filters.nr()*filters.nc()/(nr*nc))),
+          out_channels(int(filters.num_samples())),
+          filters(unsigned(out_channels)) {
+
+        if (nr < 1 || nc < 1 || dy < 1 || dx < 1 || sy < 1 || sx < 1)
+            throw std::invalid_argument("invalid convolution arguments");
+
+        const auto filter_size = in_channels*nr*nc;
+        if (out_channels < 1 || in_channels < 1 ||
+            filters.size() != std::size_t(out_channels)*unsigned(filter_size))
+            throw std::invalid_argument("invalid filters for convolution");
+
+        opt.num_threads = 1;
+        opt.use_packing_layout = false;
+
+        ncnn::ParamDict pd;
+        pd.set(0, 1);   // number of filters
+        pd.set(1, nc);  // kernel_w
+        pd.set(11, nr); // kernel_h
+        pd.set(2, dx);  // dilation_w
+        pd.set(12, dy); // dilation_h
+        pd.set(3, sx);  // stride_w
+        pd.set(13, sy); // stride_h
+        pd.set(4, 0);   // pad_w
+        pd.set(14, 0);  // pad_h
+        pd.set(5, 0);   // bias_term
+        pd.set(6, filter_size);
+
+        ncnn::Mat weights[1];
+        auto fd = const_cast<float*>(filters.host());
+
+        for (auto& lp : this->filters) {
+            weights[0] = { filter_size, fd };
+            lp.reset(ncnn::create_layer(ncnn::LayerType::Convolution));
+            lp->load_param(pd);
+            lp->load_model(ncnn::ModelBinFromMatArray(weights));
+            lp->create_pipeline(opt);
+            fd += filter_size;
+        }
+    }
+    
+    void conv_ncnn(const dlib::tensor& input, dlib::resizable_tensor& output) {
+        if (input.nc() < wx || input.nr() < wy || input.k() != in_channels)
+            throw std::invalid_argument("tensor has incorrect size for convolution");
+        output.set_size(input.num_samples(),
+                        out_channels,
+                        1 + (input.nr() - wy) / sy,
+                        1 + (input.nc() - wx) / sx);
+        if (input.num_samples() <= 0)
+            return;
+
+        const auto context = core::job_context::this_context();
+        const auto nthreads = context ? context->num_threads() : 0;
+        if (!context && !warn_context_not_found) {
+            warn_context_not_found = true;
+            FILE_LOG(logWARNING) << "conv: job_context not found -- using single thread/core";
+        }
+
+        FILE_LOG(logTRACE)
+            << "conv: " << input.num_samples() << " samples "
+            << input.k() << 'x' << input.nr() << 'x' << input.nc() << " -> "
+            << output.k() << 'x' << output.nr() << 'x' << output.nc()
+            << " (" << nthreads << " threads)";
+
+        // parallelize on output channels
+        struct state {
+            std::unique_ptr<ncnn::Layer> const* const filters;
+            const ncnn::Option opt;
+            const int num_samples;
+            std::atomic<long> next{0};
+
+            const int src_w, src_h, src_pixels, src_k;
+            const unsigned src_sample;
+            float* const src_data;
+            const bool copy_src;
+
+            const int dest_w, dest_h, dest_pixels, dest_k;
+            const unsigned dest_sample;
+            float* const dest_data;
+            const bool copy_dest;
+
+            state(const internal& obj,
+                  const dlib::tensor& input,
+                  dlib::tensor& output)
+                : filters(obj.filters.data()),
+                  opt(obj.opt),
+                  num_samples(int(output.num_samples())),
+                  src_w(int(input.nc())),
+                  src_h(int(input.nr())),
+                  src_pixels(src_w*src_h),
+                  src_k(int(input.k())),
+                  src_sample(unsigned(input.nc()*input.nr()*input.k())),
+                  src_data(const_cast<float*>(input.host())),
+                  copy_src(((src_w*src_h) & 3) != 0),
+                  dest_w(int(output.nc())),
+                  dest_h(int(output.nr())),
+                  dest_pixels(dest_w*dest_h),
+                  dest_k(int(output.k())),
+                  dest_sample(unsigned(output.nc()*output.nr()*output.k())),
+                  dest_data(output.host_write_only()),
+                  copy_dest((dest_pixels & 3) != 0) {
+            }
+
+            void operator()() {
+                ncnn::Mat top, bottom;
+                if (copy_src)
+                    bottom.create(src_w, src_h, src_k);
+                
+                for (const auto end = long(dest_k) * num_samples; ; ) {
+                    const auto nk = next.fetch_add(1,std::memory_order_relaxed);
+                    if (nk >= end) break;
+
+                    const auto n = nk / dest_k;
+                    const auto k = nk % dest_k;
+
+                    const auto src = src_data + n * src_sample;
+                    if (copy_src) {
+                        auto sp = src;
+                        float* dp = bottom;
+                        for (auto sk = src_k; sk > 0; --sk,
+                                 sp += src_pixels, dp += bottom.cstep)
+                            std::copy_n(sp, src_pixels, dp);
+                    }
+                    else { // can read directly from src
+                        bottom = { src_w, src_h, src_k, src };
+                        assert(bottom.cstep == std::size_t(src_pixels) &&
+                               bottom == src);
+                    }
+
+                    const auto dest = dest_data + nk * dest_pixels;
+                    if (copy_dest) {
+                        filters[k]->forward(bottom, top, opt);
+                        assert(top.w * top.h == dest_pixels && top.c == 1);
+                        float const* ch = top;
+                        std::copy_n(ch, dest_pixels, dest);
+                    }
+                    else { // can output to dest in place
+                        top = { dest_w, dest_h, 1, dest };
+                        assert(top.cstep == std::size_t(dest_pixels));
+                        filters[k]->forward(bottom, top, opt);
+                        assert(top == dest);
+                    }
+                }
+            }
+        };
+
+        state s(*this, input, output);
+
+        if (nthreads <= 0) {
+            s();
+            return;
+        }
+
+        struct job {
+            state& s;
+            inline auto operator()() { s(); return 0; }
+        };
+        std::vector<core::job_function<job> > jobs;
+        jobs.reserve(nthreads);
+        for (auto n = nthreads; n > 0; --n) {
+            jobs.emplace_back(s);
+            context->submit_absolute(core::job_queue::order_min, jobs.back());
+        }
+        s(); // this thread
+        context->wait_for_all(jobs.begin(), jobs.end());
+        for (auto& job : jobs)
+            *job; // re-throw any exceptions
+    }
+};
+
+void forward_conv::setup(int nr, int nc, int dy, int dx, int sy, int sx,
+                         const dlib::tensor& filters) {
+    state = std::make_unique<internal>(nr, nc, dy, dx, sy, sx, filters);
+    m = &internal::conv_ncnn;
+}
+
+forward_conv::forward_conv() = default;
+forward_conv::~forward_conv() = default;
+forward_conv::forward_conv(const forward_conv&) {}
+forward_conv& forward_conv::operator=(const forward_conv& other) {
+    if (this != &other)
+        state = nullptr;
+    return *this;
+}
+void forward_conv::reset() {
+    state = nullptr;
+}
+
+
+
+/****************  class forward_convdw  ****************/
+
+struct forward_convdw::internal {
+    int wy, wx, sy, sx;
+    int out_channels;
+    std::vector<std::unique_ptr<ncnn::Layer> > filters; // per output channel
+    ncnn::Option opt;
+
+    internal(int nr, int nc, int dy, int dx, int sy, int sx,
+             const dlib::tensor& filters)
+        : wy(1 + (nr-1) * dy),
+          wx(1 + (nc-1) * dx),
+          sy(sy), sx(sx),
+          out_channels(int(filters.size()/unsigned(nr*nc))),
+          filters(unsigned(out_channels)) {
+
+        if (nr < 1 || nc < 1 || dy < 1 || dx < 1 || sy < 1 || sx < 1)
+            throw std::invalid_argument("invalid convolution arguments");
+
+        const auto filter_size = nr*nc;
+        if (out_channels < 1 ||
+            filters.size() != std::size_t(out_channels)*unsigned(filter_size))
+            throw std::invalid_argument("invalid filters for convolution");
+
+        opt.num_threads = 1;
+        opt.use_packing_layout = false;
+
+        ncnn::ParamDict pd;
+        pd.set(0, 1);   // out channels
+        pd.set(1, nc);  // kernel_w
+        pd.set(11, nr); // kernel_h
+        pd.set(2, dx);  // dilation_w
+        pd.set(12, dy); // dilation_h
+        pd.set(3, sx);  // stride_w
+        pd.set(13, sy); // stride_h
+        pd.set(4, 0);   // pad_w
+        pd.set(14, 0);  // pad_h
+        pd.set(5, 0);   // bias_term
+        pd.set(6, filter_size);
+
+        ncnn::Mat weights[1];
+        auto fd = const_cast<float*>(filters.host());
+
+        for (auto& lp : this->filters) {
+            weights[0] = { filter_size, fd };
+            lp.reset(ncnn::create_layer(ncnn::LayerType::Convolution));
+            lp->load_param(pd);
+            lp->load_model(ncnn::ModelBinFromMatArray(weights));
+            lp->create_pipeline(opt);
+            fd += filter_size;
+        }
+    }
+
+    void conv_ncnn(const dlib::tensor& input, dlib::resizable_tensor& output) {
+        if (input.nc() < wx || input.nr() < wy)
+            throw std::invalid_argument("tensor has incorrect size for convolution");
+        const auto mult = out_channels / int(input.k());
+        if (mult < 1 || out_channels != mult * input.k())
+            throw std::logic_error("tensor has wrong number of channels for convolution");
+
+        output.set_size(input.num_samples(),
+                        out_channels,
+                        1 + (input.nr() - wy) / sy,
+                        1 + (input.nc() - wx) / sx);
+        if (input.num_samples() <= 0)
+            return;
+        
+        const auto context = core::job_context::this_context();
+        const auto nthreads = context ? context->num_threads() : 0;
+        if (!context && !warn_context_not_found) {
+            warn_context_not_found = true;
+            FILE_LOG(logWARNING) << "conv: job_context not found -- using single thread/core";
+        }
+
+        // parallelize on input channels
+        struct state {
+            std::unique_ptr<ncnn::Layer> const* const filters;
+            const ncnn::Option opt;
+            const int mult, num_samples;
+            std::atomic<int> next{0};
+
+            const int src_w, src_h, src_pixels, src_k;
+            const unsigned src_sample;
+            float* const src_data;
+
+            const int dest_w, dest_h, dest_pixels;
+            const unsigned dest_sample;
+            float* const dest_data;
+
+            state(const internal& obj,
+                  const dlib::tensor& input,
+                  dlib::tensor& output)
+                : filters(obj.filters.data()),
+                  opt(obj.opt),
+                  mult(int(output.k()/input.k())),
+                  num_samples(int(output.num_samples())),
+                  src_w(int(input.nc())),
+                  src_h(int(input.nr())),
+                  src_pixels(src_w*src_h),
+                  src_k(int(input.k())),
+                  src_sample(unsigned(input.nc()*input.nr()*input.k())),
+                  src_data(const_cast<float*>(input.host())),
+                  dest_w(int(output.nc())),
+                  dest_h(int(output.nr())),
+                  dest_pixels(dest_w*dest_h),
+                  dest_sample(unsigned(output.nc()*output.nr()*output.k())),
+                  dest_data(output.host_write_only()) {
+            }
+
+            void operator()() {
+                const auto copy_required = (dest_pixels & 3) != 0;
+                ncnn::Mat top;
+                
+                for (;;) {
+                    const auto ik = next.fetch_add(1,std::memory_order_relaxed);
+                    if (ik >= src_k) break;
+                    const auto ok = mult*ik;
+
+                    auto src = src_data + ik*src_pixels;
+                    auto dest = dest_data + ok*dest_pixels;
+                    
+                    for (auto n = num_samples; n > 0; --n,
+                             src += src_sample, dest += dest_sample) {
+                        const auto bottom = ncnn::Mat { src_w, src_h, 1, src };
+                        auto dp = dest;
+                        auto it = filters + ok, end = it + mult;
+                        if (copy_required)
+                            do {
+                                (**it).forward(bottom, top, opt);
+                                assert(top.w * top.h == dest_pixels &&
+                                       top.c == 1);
+                                const auto sp = static_cast<float const*>(top);
+                                dp = std::copy_n(sp, dest_pixels, dp);
+                            } while (++it != end);
+                        else
+                            do {
+                                top = { dest_w, dest_h, 1, dp };
+                                assert(top.cstep == std::size_t(dest_pixels));
+                                (**it).forward(bottom, top, opt);
+                                assert(top == dp);
+                                dp += dest_pixels;
+                            } while (++it != end);
+                    }
+                }
+            }
+        };
+
+        state s(*this, input, output);
+
+        if (nthreads <= 0) {
+            s();
+            return;
+        }
+
+        struct job {
+            state& s;
+            inline auto operator()() { s(); return 0; }
+        };
+        std::vector<core::job_function<job> > jobs;
+        jobs.reserve(nthreads);
+        for (auto n = nthreads; n > 0; --n) {
+            jobs.emplace_back(s);
+            context->submit_absolute(core::job_queue::order_min, jobs.back());
+        }
+        s(); // this thread
+        context->wait_for_all(jobs.begin(), jobs.end());
+        for (auto& job : jobs)
+            *job; // re-throw any exceptions
+    }
+};
+
+void forward_convdw::setup(int nr, int nc, int dy, int dx, int sy, int sx,
+                           const dlib::tensor& filters) {
+    state = std::make_unique<internal>(nr, nc, dy, dx, sy, sx, filters);
+    m = &internal::conv_ncnn;
+}
+
+forward_convdw::forward_convdw() = default;
+forward_convdw::~forward_convdw() = default;
+forward_convdw::forward_convdw(const forward_convdw&) {}
+forward_convdw& forward_convdw::operator=(const forward_convdw& other) {
+    if (this != &other)
+        state = nullptr;
+    return *this;
+}
+void forward_convdw::reset() {
+    state = nullptr;
+}

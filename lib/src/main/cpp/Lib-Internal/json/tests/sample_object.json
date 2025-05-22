@@ -1,0 +1,10 @@
+# sample json object with initial comment
+	  # with additional indented comment   
+{
+    # comment at start of object
+    "type":1,  # comment for element
+    "id":"1",
+    "method":"openArray",
+    "args":{"args":{"Details":2,"FaceTypes":["suspect","person","manual"],"PersonIds":[133]},"method":"getFaceDetails"}
+    # comment at end of object
+}

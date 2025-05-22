@@ -1,0 +1,30 @@
+
+Packages required to build:
+  apt install libboost-dev liblapack-dev libblas-dev libopenblas-dev zlib1g-dev
+
+Need dlib-proper build in lib-external:
+  in top level CMakeLists.txt add line
+    set(CMAKE_POSITION_INDEPENDENT_CODE true)
+  then 'mkdir build; cd build; cmake ..'
+  also edit dlib/config.h to comment out lines to enable JPEG and PNG
+  finally do 'make'
+
+Makefile changes:
+  in det/Makefile disable ncnn and remove DEP_EXTERNAL
+  in models/Makefile disable boost_filesystem and remove from DEP_EXTERNAL
+  in Makefile.inc change logTRACE to logNONE (or maybe error or warning)
+
+Config dir:
+  mnet.25-opt.nv
+  shape_predictor_68_face_landmarks.dat
+  rec24.nv
+
+  settings.json {
+    "detection": {
+      "detector_version":     7,
+      "size_range":           1,
+      "confidence_threshold": 0.0,
+      "landmark_detection":   ["dlib68"]
+    }
+  }
+

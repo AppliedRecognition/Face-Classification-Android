@@ -1,0 +1,168 @@
+
+#ifndef __LIB_INTERNAL_BUILD_APPLICATIONS__
+#error profiler.cpp is an application -- not part of the tools library
+#endif
+
+#include "FaceDetectionRecognition.hpp"
+
+#include <raw_image/transform.hpp>
+
+#include <json/pull_types.hpp>
+#include <json/pull_file.hpp>
+
+#include <applog/applog.hpp>
+
+#include <chrono>
+
+
+/*
+static const auto exclude_pts_5  = std::set<unsigned> {0,2,4};
+static const auto exclude_pts_68 = std::set<unsigned> {0,17,27,36,42,48};
+static void annotate(cv::Mat& dest, const det::detected_coordinates& face) {
+    static const auto c = cvScalar(255,255,255);
+    auto& exclude_pts =
+        face.type == det::dt::dlib5 ? exclude_pts_5 : exclude_pts_68;
+    for (unsigned i = 1; i < face.landmarks.size(); ++i) {
+        if (exclude_pts.count(i)) continue;
+        auto& p0 = face.landmarks[i-1];
+        auto& p1 = face.landmarks[i];
+        line(dest, raw_image::round_from(p0), raw_image::round_from(p1), c, 1);
+    }
+    for (unsigned i = 0; i < face.landmarks.size(); ++i)
+        if (exclude_pts.count(i))
+            circle(dest, raw_image::round_from(face.landmarks[i]),
+                   3, cvScalarAll(0), 1);
+}
+*/
+
+static constexpr unsigned possible_sizes[][2] = {
+    {1280,720},
+    {720,480},
+    {640,480},
+    {320,240}
+};
+
+using raw_image_2plane_ptr =
+    std::shared_ptr<std::array<raw_image::plane,2> >;
+
+static auto read_raw_nv21(const boost::filesystem::path& fn) {
+    auto ptr = std::make_shared<std::pair<std::array<raw_image::plane,2>,stdx::binary> >();
+    auto& a = ptr->first;
+    auto& bin = ptr->second;
+    bin = json::pull_file(fn,64*1024).pull_final();
+    unsigned w = 0, h = 0;
+    for (auto& size : possible_sizes) {
+        const auto n = size[0] * size[1];
+        if (bin.size() == n + n / 2) {
+            w = size[0], h = size[1];
+            break;
+        }
+    }
+    if (w <= 0) {
+        FILE_LOG(logERROR) << "failed to detect image dimensions:" << std::endl
+                           << "\tsize: " << bin.size() << std::endl
+                           << "\tfile: " << fn;
+        throw std::runtime_error("failed to detect image dimensions");
+    }
+    a[0].data = const_cast<unsigned char*>(bin.data<unsigned char>());
+    a[0].width = w;
+    a[0].height = h;
+    a[0].bytes_per_line = a[0].width;
+    a[0].layout = raw_image::pixel::y8_nv21;
+    a[1].data = a[0].data + a[0].height*a[0].bytes_per_line;
+    a[1].width = a[0].width/2;
+    a[1].height = a[0].height/2;
+    a[1].bytes_per_line = 2*a[1].width;
+    a[1].layout = raw_image::pixel::vu16_nv21;
+    return raw_image_2plane_ptr(move(ptr), &a);
+}
+
+namespace {
+    struct image_record {
+        raw_image_2plane_ptr image;
+        image_record(raw_image_2plane_ptr image) noexcept
+            : image(move(image)) {
+            this->image->front().rotate = 1;
+        }
+
+        std::vector<unsigned> conv_to_r85;
+        std::vector<unsigned> full_detection;
+        std::vector<unsigned> tracking;
+        std::vector<unsigned> alignment;
+
+        render::face_alignment align;
+    };
+}
+
+template <typename TD>
+static inline auto round_ms(const TD& duration) {
+    using namespace std::chrono;
+    return unsigned(duration_cast<microseconds>(duration).count()+500) / 1000;
+}
+
+
+/**** main ****/
+
+int main(int argc, char*argv[]) {
+    const char* const prog = [&](){
+        assert(argc > 0);
+        if (auto p = strrchr(argv[0], '/')) return p + 1;
+        return argv[0];
+    }();
+    ++argv, --argc;
+    FILE_LOG(logINFO) << prog;
+
+    // load images
+    std::vector<image_record> images;
+    for ( ; argc > 0; ++argv, --argc)
+        images.emplace_back(read_raw_nv21(*argv));
+    FILE_LOG(logINFO) << "images: " << images.size();
+    if (images.empty())
+        return 0;
+    
+    det::detection_settings ds;
+    ds.detector_version = 3;
+    ds.size_range = 0.7f;
+    ds.landmark_detection = det::lm::dlib68;
+    ds.landmark_detection.contrast_correction = 1;
+    
+    FaceDetectionRecognition fdr("../models/", ds);
+
+    using clock = std::chrono::steady_clock;
+    
+    // do tests
+    FILE_LOG(logINFO) << "--";
+    for (auto iter = 0; iter < 9; ++iter) {
+        for (auto& img : images) {
+            FaceTrackingSession session;
+            const auto t0 = clock::now();
+            auto r85 = copy_rotate(*img.image, img.image->front().rotate,
+                                   raw_image::pixel::r85g10b05);
+            const auto t1 = clock::now();
+            auto f0 = fdr.trackFaces(r85, session);
+            assert(!f0.empty());
+            const auto t2 = clock::now();
+            auto f1 = fdr.trackFaces(*img.image, session);
+            assert(!f1.empty());
+            const auto t3 = clock::now();
+            img.align = fdr.facePoseFromLandmarks(f1.front(), *img.image);
+            const auto t4 = clock::now();
+
+            img.conv_to_r85.push_back(round_ms(t1-t0));
+            img.full_detection.push_back(round_ms(t2-t1));
+            img.tracking.push_back(round_ms(t3-t2));
+            img.alignment.push_back(round_ms(t4-t3));
+        }
+    }
+
+    for (auto& img : images) {
+        FILE_LOG(logINFO) << "--";
+        for (auto p : { &img.conv_to_r85, &img.full_detection, &img.tracking, &img.alignment }) {
+            std::sort(p->begin(), p->end());
+            FILE_LOG(logINFO) << '\t' << p->front() << '\t' << (*p)[p->size()/2] << '\t' << p->back();
+        }
+    }
+
+    FILE_LOG(logINFO) << "--";
+    return 0;
+}
