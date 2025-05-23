@@ -34,11 +34,11 @@ maven {
 
 #### Face covering
 
-`com.appliedrec.verid3:face-classification-covering:1.0.0`
+`com.appliedrec.verid3:face-classification-face-covering:1.0.0`
 
 #### ID card face
 
-`com.appliedrec.verid3:face-classification-idcard:1.0.0`
+`com.appliedrec.verid3:face-classification-id-card-face:1.0.0`
 
 ## Usage
 

@@ -1,0 +1,11 @@
+$dokka.format:html-v1
+$dokka.linkExtension:html
+
+module:face-classification-core
+com.appliedrec.verid3.faceclassification
+module:face-classification-face-covering
+com.appliedrec.verid3.faceclassification.covering
+module:face-classification-glasses
+com.appliedrec.verid3.faceclassification.glasses
+module:face-classification-id-card-face
+com.appliedrec.verid3.faceclassification.idcard

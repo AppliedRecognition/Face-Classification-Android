@@ -28,7 +28,7 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "Face Classification"
-include(":lib")
-include(":face-covering")
-include(":glasses")
-include(":id-card-face")
+include(":face-classification-core")
+include(":face-classification-face-covering")
+include(":face-classification-glasses")
+include(":face-classification-id-card-face")

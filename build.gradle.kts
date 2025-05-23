@@ -2,4 +2,9 @@
 plugins {
     alias(libs.plugins.android.library) apply false
     alias(libs.plugins.kotlin.android) apply false
+    alias(libs.plugins.dokka)
+}
+
+tasks.named<org.jetbrains.dokka.gradle.DokkaMultiModuleTask>("dokkaHtmlMultiModule") {
+    outputDirectory.set(rootProject.file("docs"))
 }
