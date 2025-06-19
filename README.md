@@ -10,15 +10,13 @@ The project contains 3 classifiers:
 
 ### Repository setup
 
-The libraries are hosted in Applied Recognition's GitHub Packages repository. Please contact Applied Recognition to obtain credentials to access the packages.
+The libraries are hosted in Applied Recognition's GitHub Packages repository.
 
-You'll obtain a user name and a token that's valid for one hour. You will also receive a Python script that will refresh the token as needed.
-
-Store the user name and token in your local.properties file as `gpr.user` and `gpr.token` respectively. Then in your build file add the following repository in your `repositories` block:
+Store your GitHub user name and token in your local.properties file as `gpr.user` and `gpr.token` respectively. Then in your build file add the following repository in your `repositories` block:
 
 ```kotlin
 maven {
-    url = uri("https://maven.pkg.github.com/AppliedRecognition/Ver-ID-3D-Android-Libraries")
+    url = uri("https://maven.pkg.github.com/AppliedRecognition/Ver-ID-Releases-Android")
     credentials {
         username = settings.extra["gpr.user"] as String?
         password = settings.extra["gpr.token"] as String?
