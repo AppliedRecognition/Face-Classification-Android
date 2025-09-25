@@ -1,3 +1,8 @@
+# This repo has been archived
+Matching libraries are now distributed at [Facial-Attribute-Detection-Android](https://github.com/AppliedRecognition/Facial-Attribute-Detection-Android).
+
+----
+
 # Face classifiers for Android
 
 The project contains 3 classifiers:
